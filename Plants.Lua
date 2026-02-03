@@ -116,3 +116,4 @@ end
 dropdown.MouseButton1Click:Connect(function()
     optionsFrame.Visible = not optionsFrame.Visible
 end)
+
