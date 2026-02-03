@@ -1,0 +1,69 @@
+local Players = game:GetService("Players")
+local UserInputService = game:GetService("UserInputService")
+local VirtualInputManager = game:GetService("VirtualInputManager")
+
+local player = Players.LocalPlayer
+
+local function getHRP()
+    local character = player.Character or player.CharacterAdded:Wait()
+    return character:WaitForChild("HumanoidRootPart")
+end
+
+local plantsFolder = workspace:WaitForChild("Plants")
+
+local enabled = false
+
+-- Toggle with H
+UserInputService.InputBegan:Connect(function(input, gp)
+    if gp then return end
+    if input.KeyCode == Enum.KeyCode.H then
+        enabled = not enabled
+        warn("Ginseng Teleport:", enabled and "ON" or "OFF")
+    end
+end)
+
+-- Function to press E once
+local function pressE()
+    VirtualInputManager:SendKeyEvent(true, Enum.KeyCode.E, false, game)
+    task.wait(0.05)
+    VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.E, false, game)
+end
+
+task.spawn(function()
+    while true do
+        if enabled then
+            for _, obj in ipairs(plantsFolder:GetDescendants()) do
+                if not enabled then break end
+
+                if obj.Name == "Ginseng" then
+                    local hrp = getHRP()
+                    local targetCFrame
+
+                    -- BasePart
+                    if obj:IsA("BasePart") then
+                        targetCFrame = obj.CFrame
+
+                    -- Model
+                    elseif obj:IsA("Model") then
+                        local part = obj.PrimaryPart or obj:FindFirstChildWhichIsA("BasePart", true)
+                        if part then
+                            targetCFrame = part.CFrame
+                        end
+                    end
+
+                    if targetCFrame then
+                        hrp.CFrame = targetCFrame + Vector3.new(0, 3, 0)
+                        print("Teleported to Ginseng")
+
+                        -- Press E once after teleport
+                        task.wait(0.2)
+                        pressE()
+
+                        task.wait(4)
+                    end
+                end
+            end
+        end
+        task.wait(0.2)
+    end
+end)
