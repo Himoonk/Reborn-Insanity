@@ -13,14 +13,15 @@ local FOLLOW_DISTANCE = 2.5
 local MIN_DISTANCE = 1
 local MAX_DISTANCE = 8
 local HEIGHT_OFFSET = 0
+local TP_BELOW_OFFSET = -5 -- Distance below the mob
 
 -- STATE
 local selectedMobs = {}
 local currentTarget = nil
 local followEnabled = false
+local tpBelowEnabled = false
 local followConnection = nil
 local draggingSlider = false
-local mobCache = {} -- Cache for faster lookups
 
 -------------------------------------------------------
 -- CHARACTER RESPAWN HANDLER
@@ -56,43 +57,7 @@ end
 table.sort(mobNames)
 
 -------------------------------------------------------
--- BUILD MOB CACHE
--------------------------------------------------------
-local function rebuildMobCache()
-	mobCache = {}
-	
-	-- Only cache selected mob types
-	for _, mobName in ipairs(selectedMobs) do
-		mobCache[mobName] = {}
-	end
-	
-	-- Find mobs folder (adjust path if needed)
-	local mobsFolder = workspace:FindFirstChild("Mobs ")
-	if not mobsFolder then return end
-	
-	for _, area in ipairs(mobsFolder:GetChildren()) do
-		for _, mob in ipairs(area:GetChildren()) do
-			if table.find(selectedMobs, mob.Name) then
-				local humanoid = mob:FindFirstChildOfClass("Humanoid")
-				local root = mob:FindFirstChild("HumanoidRootPart")
-				
-				if humanoid and root then
-					if not mobCache[mob.Name] then
-						mobCache[mob.Name] = {}
-					end
-					table.insert(mobCache[mob.Name], {
-						model = mob,
-						humanoid = humanoid,
-						root = root
-					})
-				end
-			end
-		end
-	end
-end
-
--------------------------------------------------------
--- FIND NEAREST ALIVE MOB (OPTIMIZED)
+-- FIND NEAREST ALIVE MOB (SIMPLE & FAST)
 -------------------------------------------------------
 local function findNearestAliveMob()
 	if #selectedMobs == 0 or not hrp or not hrp.Parent then return nil end
@@ -101,22 +66,23 @@ local function findNearestAliveMob()
 	local shortestDistance = math.huge
 	local playerPos = hrp.Position
 	
-	for mobName, mobs in pairs(mobCache) do
-		for i = #mobs, 1, -1 do -- Iterate backwards for safe removal
-			local mobData = mobs[i]
-			
-			-- Check if mob still exists and is valid
-			if not mobData.model.Parent or not mobData.humanoid.Parent then
-				table.remove(mobs, i) -- Remove from cache
-			elseif mobData.humanoid.Health > 0 then
-				local distance = (playerPos - mobData.root.Position).Magnitude
-				if distance < shortestDistance then
-					shortestDistance = distance
-					nearestMob = mobData.model
+	-- Only search in Mobs folder
+	local mobsFolder = workspace:FindFirstChild("Mobs ")
+	if not mobsFolder then return nil end
+	
+	for _, area in ipairs(mobsFolder:GetChildren()) do
+		for _, mob in ipairs(area:GetChildren()) do
+			if table.find(selectedMobs, mob.Name) then
+				local humanoid = mob:FindFirstChildOfClass("Humanoid")
+				local root = mob:FindFirstChild("HumanoidRootPart")
+				
+				if humanoid and humanoid.Health > 0 and root then
+					local distance = (playerPos - root.Position).Magnitude
+					if distance < shortestDistance then
+						shortestDistance = distance
+						nearestMob = mob
+					end
 				end
-			else
-				-- Mob is dead, remove from cache
-				table.remove(mobs, i)
 			end
 		end
 	end
@@ -127,43 +93,46 @@ end
 -------------------------------------------------------
 -- FOLLOW LOGIC
 -------------------------------------------------------
-local lastTargetCheck = 0
-local TARGET_CHECK_INTERVAL = 0.5 -- Check for new target every 0.5 seconds
+local nextCheckTime = 0
 
 function startFollow()
 	if followConnection then followConnection:Disconnect() end
 	
-	rebuildMobCache() -- Build cache when starting
 	currentTarget = findNearestAliveMob()
+	nextCheckTime = 0
 
 	followConnection = RunService.Heartbeat:Connect(function()
 		if not followEnabled or not character or not character.Parent or not hrp or not hrp.Parent then
 			return
 		end
 		
-		-- Check if current target is still valid (lightweight check)
+		local currentTime = tick()
+		
+		-- Quick check if current target is still alive
 		if currentTarget and currentTarget.Parent then
 			local humanoid = currentTarget:FindFirstChildOfClass("Humanoid")
-			if humanoid and humanoid.Health > 0 then
-				-- Target is good, follow it
-				local root = currentTarget:FindFirstChild("HumanoidRootPart")
-				if root then
-					local behindPos =
-						root.Position
-						- (root.CFrame.LookVector * FOLLOW_DISTANCE)
-						+ Vector3.new(0, HEIGHT_OFFSET, 0)
-
+			local root = currentTarget:FindFirstChild("HumanoidRootPart")
+			
+			if humanoid and humanoid.Health > 0 and root then
+				-- Target is good, teleport to it
+				if tpBelowEnabled then
+					-- TP below the mob
+					hrp.CFrame = CFrame.new(
+						root.Position + Vector3.new(0, TP_BELOW_OFFSET, 0)
+					)
+				else
+					-- TP behind the mob
+					local behindPos = root.Position - (root.CFrame.LookVector * FOLLOW_DISTANCE) + Vector3.new(0, HEIGHT_OFFSET, 0)
 					hrp.CFrame = CFrame.lookAt(behindPos, root.Position)
 				end
-				return -- Don't search for new target
+				return
 			end
 		end
 		
-		-- Only search for new target periodically, not every frame
-		local currentTime = tick()
-		if currentTime - lastTargetCheck >= TARGET_CHECK_INTERVAL then
-			lastTargetCheck = currentTime
+		-- Only look for new target every 1 second max
+		if currentTime >= nextCheckTime then
 			currentTarget = findNearestAliveMob()
+			nextCheckTime = currentTime + 1
 		end
 	end)
 end
@@ -174,7 +143,6 @@ function stopFollow()
 		followConnection = nil
 	end
 	currentTarget = nil
-	mobCache = {}
 end
 
 -------------------------------------------------------
@@ -184,7 +152,7 @@ local gui = Instance.new("ScreenGui", player.PlayerGui)
 gui.ResetOnSpawn = false
 
 local frame = Instance.new("Frame", gui)
-frame.Size = UDim2.fromOffset(330, 570)
+frame.Size = UDim2.fromOffset(330, 610)
 frame.Position = UDim2.fromScale(0.02, 0.25)
 frame.BackgroundColor3 = Color3.fromRGB(20,20,20)
 
@@ -246,11 +214,33 @@ toggle.MouseButton1Click:Connect(function()
 end)
 
 -------------------------------------------------------
+-- TP BELOW TOGGLE
+-------------------------------------------------------
+local tpBelowToggle = Instance.new("TextButton", frame)
+tpBelowToggle.Size = UDim2.new(1, -10, 0, 35)
+tpBelowToggle.Position = UDim2.fromOffset(5, 50)
+tpBelowToggle.Text = "TP Below: OFF"
+tpBelowToggle.BackgroundColor3 = Color3.fromRGB(60,60,60)
+tpBelowToggle.TextColor3 = Color3.new(1,1,1)
+
+tpBelowToggle.MouseButton1Click:Connect(function()
+	tpBelowEnabled = not tpBelowEnabled
+	
+	if tpBelowEnabled then
+		tpBelowToggle.Text = "TP Below: ON"
+		tpBelowToggle.BackgroundColor3 = Color3.fromRGB(40,100,140)
+	else
+		tpBelowToggle.Text = "TP Below: OFF"
+		tpBelowToggle.BackgroundColor3 = Color3.fromRGB(60,60,60)
+	end
+end)
+
+-------------------------------------------------------
 -- CLEAR SELECTION BUTTON
 -------------------------------------------------------
 local clearBtn = Instance.new("TextButton", frame)
 clearBtn.Size = UDim2.new(0.48, -5, 0, 30)
-clearBtn.Position = UDim2.fromOffset(5, 50)
+clearBtn.Position = UDim2.fromOffset(5, 90)
 clearBtn.Text = "Clear All"
 clearBtn.BackgroundColor3 = Color3.fromRGB(140,40,40)
 clearBtn.TextColor3 = Color3.new(1,1,1)
@@ -258,7 +248,6 @@ clearBtn.TextColor3 = Color3.new(1,1,1)
 clearBtn.MouseButton1Click:Connect(function()
 	selectedMobs = {}
 	currentTarget = nil
-	mobCache = {}
 	
 	-- Update all button colors
 	for _, btn in ipairs(mobButtons) do
@@ -273,7 +262,7 @@ end)
 -------------------------------------------------------
 local countLabel = Instance.new("TextLabel", frame)
 countLabel.Size = UDim2.new(0.48, -5, 0, 30)
-countLabel.Position = UDim2.new(0.5, 5, 0, 50)
+countLabel.Position = UDim2.new(0.5, 5, 0, 90)
 countLabel.Text = "Selected: 0"
 countLabel.BackgroundColor3 = Color3.fromRGB(40,40,40)
 countLabel.TextColor3 = Color3.new(1,1,1)
@@ -283,7 +272,7 @@ countLabel.TextColor3 = Color3.new(1,1,1)
 -------------------------------------------------------
 local sliderLabel = Instance.new("TextLabel", frame)
 sliderLabel.Size = UDim2.new(1, -10, 0, 20)
-sliderLabel.Position = UDim2.fromOffset(5, 90)
+sliderLabel.Position = UDim2.fromOffset(5, 130)
 sliderLabel.Text = ("Distance: %.1f"):format(FOLLOW_DISTANCE)
 sliderLabel.BackgroundTransparency = 1
 sliderLabel.TextColor3 = Color3.new(1,1,1)
@@ -291,7 +280,7 @@ sliderLabel.TextXAlignment = Enum.TextXAlignment.Left
 
 local sliderBar = Instance.new("Frame", frame)
 sliderBar.Size = UDim2.new(1, -20, 0, 6)
-sliderBar.Position = UDim2.fromOffset(10, 115)
+sliderBar.Position = UDim2.fromOffset(10, 155)
 sliderBar.BackgroundColor3 = Color3.fromRGB(70,70,70)
 
 local sliderKnob = Instance.new("Frame", sliderBar)
@@ -338,7 +327,7 @@ end)
 -------------------------------------------------------
 local searchBox = Instance.new("TextBox", frame)
 searchBox.Size = UDim2.new(1, -10, 0, 30)
-searchBox.Position = UDim2.fromOffset(5, 130)
+searchBox.Position = UDim2.fromOffset(5, 170)
 searchBox.PlaceholderText = "Search mob..."
 searchBox.Text = ""
 searchBox.BackgroundColor3 = Color3.fromRGB(40,40,40)
@@ -353,8 +342,8 @@ searchPadding.PaddingLeft = UDim.new(0, 8)
 -- MOB LIST
 -------------------------------------------------------
 local scroll = Instance.new("ScrollingFrame", frame)
-scroll.Position = UDim2.fromOffset(5, 170)
-scroll.Size = UDim2.new(1, -10, 1, -175)
+scroll.Position = UDim2.fromOffset(5, 210)
+scroll.Size = UDim2.new(1, -10, 1, -215)
 scroll.CanvasSize = UDim2.new(0,0,0,0)
 scroll.ScrollBarImageTransparency = 0.3
 scroll.BackgroundColor3 = Color3.fromRGB(30,30,30)
@@ -397,9 +386,8 @@ for _, name in ipairs(mobNames) do
 		
 		updateCount()
 		
-		-- Rebuild cache with new selection
+		-- Find new target if following
 		if followEnabled then
-			rebuildMobCache()
 			currentTarget = findNearestAliveMob()
 		end
 	end)
