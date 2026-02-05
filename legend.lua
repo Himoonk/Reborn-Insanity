@@ -21,6 +21,22 @@ local followConnection = nil
 local draggingSlider = false
 
 -------------------------------------------------------
+-- CHARACTER RESPAWN HANDLER
+-------------------------------------------------------
+local function onCharacterAdded(newCharacter)
+	character = newCharacter
+	hrp = character:WaitForChild("HumanoidRootPart")
+	
+	-- Restart follow if it was enabled
+	if followEnabled then
+		stopFollow()
+		startFollow()
+	end
+end
+
+player.CharacterAdded:Connect(onCharacterAdded)
+
+-------------------------------------------------------
 -- AUTO SCAN MOBS
 -------------------------------------------------------
 local mobNames = {}
@@ -54,13 +70,13 @@ end
 -------------------------------------------------------
 -- FOLLOW LOGIC
 -------------------------------------------------------
-local function startFollow()
+function startFollow()
 	if followConnection then followConnection:Disconnect() end
 
 	followConnection = RunService.Heartbeat:Connect(function()
-		if followEnabled and selectedMob and selectedMob.Parent then
+		if followEnabled and selectedMob and selectedMob.Parent and character and character.Parent then
 			local root = selectedMob:FindFirstChild("HumanoidRootPart")
-			if root then
+			if root and hrp and hrp.Parent then
 				local behindPos =
 					root.Position
 					- (root.CFrame.LookVector * FOLLOW_DISTANCE)
@@ -72,7 +88,7 @@ local function startFollow()
 	end)
 end
 
-local function stopFollow()
+function stopFollow()
 	if followConnection then
 		followConnection:Disconnect()
 		followConnection = nil
