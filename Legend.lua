@@ -15,7 +15,8 @@ local MAX_DISTANCE = 8
 local HEIGHT_OFFSET = 0
 
 -- STATE
-local selectedMob = nil
+local selectedMobs = {} -- Changed to table for multiple mobs
+local currentTarget = nil
 local followEnabled = false
 local followConnection = nil
 local draggingSlider = false
@@ -54,17 +55,30 @@ end
 table.sort(mobNames)
 
 -------------------------------------------------------
--- FIND MOB
+-- FIND NEAREST ALIVE MOB
 -------------------------------------------------------
-local function findMob(name)
+local function findNearestAliveMob()
+	if #selectedMobs == 0 then return nil end
+	
+	local nearestMob = nil
+	local shortestDistance = math.huge
+	
 	for _, obj in ipairs(workspace:GetDescendants()) do
-		if obj:IsA("Model")
-		and obj.Name == name
-		and obj:FindFirstChild("HumanoidRootPart")
-		and obj:FindFirstChildOfClass("Humanoid") then
-			return obj
+		if obj:IsA("Model") and table.find(selectedMobs, obj.Name) then
+			local humanoid = obj:FindFirstChildOfClass("Humanoid")
+			local root = obj:FindFirstChild("HumanoidRootPart")
+			
+			if humanoid and humanoid.Health > 0 and root and hrp and hrp.Parent then
+				local distance = (hrp.Position - root.Position).Magnitude
+				if distance < shortestDistance then
+					shortestDistance = distance
+					nearestMob = obj
+				end
+			end
 		end
 	end
+	
+	return nearestMob
 end
 
 -------------------------------------------------------
@@ -74,15 +88,31 @@ function startFollow()
 	if followConnection then followConnection:Disconnect() end
 
 	followConnection = RunService.Heartbeat:Connect(function()
-		if followEnabled and selectedMob and selectedMob.Parent and character and character.Parent then
-			local root = selectedMob:FindFirstChild("HumanoidRootPart")
-			if root and hrp and hrp.Parent then
-				local behindPos =
-					root.Position
-					- (root.CFrame.LookVector * FOLLOW_DISTANCE)
-					+ Vector3.new(0, HEIGHT_OFFSET, 0)
+		if followEnabled and character and character.Parent and hrp and hrp.Parent then
+			-- Check if current target is still valid
+			if currentTarget and currentTarget.Parent then
+				local humanoid = currentTarget:FindFirstChildOfClass("Humanoid")
+				if not humanoid or humanoid.Health <= 0 then
+					currentTarget = nil -- Target died, find new one
+				end
+			end
+			
+			-- Find new target if we don't have one
+			if not currentTarget then
+				currentTarget = findNearestAliveMob()
+			end
+			
+			-- Follow the current target
+			if currentTarget and currentTarget.Parent then
+				local root = currentTarget:FindFirstChild("HumanoidRootPart")
+				if root then
+					local behindPos =
+						root.Position
+						- (root.CFrame.LookVector * FOLLOW_DISTANCE)
+						+ Vector3.new(0, HEIGHT_OFFSET, 0)
 
-				hrp.CFrame = CFrame.lookAt(behindPos, root.Position)
+					hrp.CFrame = CFrame.lookAt(behindPos, root.Position)
+				end
 			end
 		end
 	end)
@@ -93,6 +123,7 @@ function stopFollow()
 		followConnection:Disconnect()
 		followConnection = nil
 	end
+	currentTarget = nil
 end
 
 -------------------------------------------------------
@@ -102,7 +133,7 @@ local gui = Instance.new("ScreenGui", player.PlayerGui)
 gui.ResetOnSpawn = false
 
 local frame = Instance.new("Frame", gui)
-frame.Size = UDim2.fromOffset(330, 480)
+frame.Size = UDim2.fromOffset(330, 570)
 frame.Position = UDim2.fromScale(0.02, 0.25)
 frame.BackgroundColor3 = Color3.fromRGB(20,20,20)
 
@@ -155,6 +186,7 @@ toggle.MouseButton1Click:Connect(function()
 	if followEnabled then
 		toggle.Text = "TP BEHIND: ON"
 		toggle.BackgroundColor3 = Color3.fromRGB(40,140,40)
+		currentTarget = findNearestAliveMob()
 		startFollow()
 	else
 		toggle.Text = "TP BEHIND: OFF"
@@ -164,11 +196,41 @@ toggle.MouseButton1Click:Connect(function()
 end)
 
 -------------------------------------------------------
+-- CLEAR SELECTION BUTTON
+-------------------------------------------------------
+local clearBtn = Instance.new("TextButton", frame)
+clearBtn.Size = UDim2.new(0.48, -5, 0, 30)
+clearBtn.Position = UDim2.fromOffset(5, 50)
+clearBtn.Text = "Clear All"
+clearBtn.BackgroundColor3 = Color3.fromRGB(140,40,40)
+clearBtn.TextColor3 = Color3.new(1,1,1)
+
+clearBtn.MouseButton1Click:Connect(function()
+	selectedMobs = {}
+	currentTarget = nil
+	
+	-- Update all button colors
+	for _, btn in ipairs(mobButtons) do
+		btn.BackgroundColor3 = Color3.fromRGB(45,45,45)
+	end
+end)
+
+-------------------------------------------------------
+-- SELECTED COUNT LABEL
+-------------------------------------------------------
+local countLabel = Instance.new("TextLabel", frame)
+countLabel.Size = UDim2.new(0.48, -5, 0, 30)
+countLabel.Position = UDim2.new(0.5, 5, 0, 50)
+countLabel.Text = "Selected: 0"
+countLabel.BackgroundColor3 = Color3.fromRGB(40,40,40)
+countLabel.TextColor3 = Color3.new(1,1,1)
+
+-------------------------------------------------------
 -- DISTANCE SLIDER
 -------------------------------------------------------
 local sliderLabel = Instance.new("TextLabel", frame)
 sliderLabel.Size = UDim2.new(1, -10, 0, 20)
-sliderLabel.Position = UDim2.fromOffset(5, 50)
+sliderLabel.Position = UDim2.fromOffset(5, 90)
 sliderLabel.Text = ("Distance: %.1f"):format(FOLLOW_DISTANCE)
 sliderLabel.BackgroundTransparency = 1
 sliderLabel.TextColor3 = Color3.new(1,1,1)
@@ -176,7 +238,7 @@ sliderLabel.TextXAlignment = Enum.TextXAlignment.Left
 
 local sliderBar = Instance.new("Frame", frame)
 sliderBar.Size = UDim2.new(1, -20, 0, 6)
-sliderBar.Position = UDim2.fromOffset(10, 75)
+sliderBar.Position = UDim2.fromOffset(10, 115)
 sliderBar.BackgroundColor3 = Color3.fromRGB(70,70,70)
 
 local sliderKnob = Instance.new("Frame", sliderBar)
@@ -219,16 +281,42 @@ UIS.InputChanged:Connect(function(input)
 end)
 
 -------------------------------------------------------
+-- SEARCH BAR
+-------------------------------------------------------
+local searchBox = Instance.new("TextBox", frame)
+searchBox.Size = UDim2.new(1, -10, 0, 30)
+searchBox.Position = UDim2.fromOffset(5, 130)
+searchBox.PlaceholderText = "Search mob..."
+searchBox.Text = ""
+searchBox.BackgroundColor3 = Color3.fromRGB(40,40,40)
+searchBox.TextColor3 = Color3.new(1,1,1)
+searchBox.TextXAlignment = Enum.TextXAlignment.Left
+searchBox.ClearTextOnFocus = false
+
+local searchPadding = Instance.new("UIPadding", searchBox)
+searchPadding.PaddingLeft = UDim.new(0, 8)
+
+-------------------------------------------------------
 -- MOB LIST
 -------------------------------------------------------
 local scroll = Instance.new("ScrollingFrame", frame)
-scroll.Position = UDim2.fromOffset(5, 100)
-scroll.Size = UDim2.new(1, -10, 1, -105)
+scroll.Position = UDim2.fromOffset(5, 170)
+scroll.Size = UDim2.new(1, -10, 1, -175)
 scroll.CanvasSize = UDim2.new(0,0,0,0)
 scroll.ScrollBarImageTransparency = 0.3
+scroll.BackgroundColor3 = Color3.fromRGB(30,30,30)
 
 local layout = Instance.new("UIListLayout", scroll)
 layout.Padding = UDim.new(0, 4)
+
+mobButtons = {}
+
+-------------------------------------------------------
+-- UPDATE SELECTED COUNT
+-------------------------------------------------------
+local function updateCount()
+	countLabel.Text = "Selected: "..#selectedMobs
+end
 
 for _, name in ipairs(mobNames) do
 	local btn = Instance.new("TextButton")
@@ -237,14 +325,55 @@ for _, name in ipairs(mobNames) do
 	btn.BackgroundColor3 = Color3.fromRGB(45,45,45)
 	btn.TextColor3 = Color3.new(1,1,1)
 	btn.Parent = scroll
+	btn.Name = name
+	
+	table.insert(mobButtons, btn)
 
 	btn.MouseButton1Click:Connect(function()
-		local mob = findMob(name)
-		if mob then
-			selectedMob = mob
+		-- Toggle selection
+		if table.find(selectedMobs, name) then
+			-- Deselect
+			local index = table.find(selectedMobs, name)
+			table.remove(selectedMobs, index)
+			btn.BackgroundColor3 = Color3.fromRGB(45,45,45)
+		else
+			-- Select
+			table.insert(selectedMobs, name)
+			btn.BackgroundColor3 = Color3.fromRGB(60,120,60)
+		end
+		
+		updateCount()
+		
+		-- Update current target if following
+		if followEnabled then
+			currentTarget = findNearestAliveMob()
 		end
 	end)
 end
+
+-------------------------------------------------------
+-- SEARCH FUNCTIONALITY
+-------------------------------------------------------
+local function updateSearch(query)
+	query = query:lower()
+	local visibleCount = 0
+	
+	for _, btn in ipairs(mobButtons) do
+		if query == "" or btn.Name:lower():find(query, 1, true) then
+			btn.Visible = true
+			visibleCount = visibleCount + 1
+		else
+			btn.Visible = false
+		end
+	end
+	
+	task.wait()
+	scroll.CanvasSize = UDim2.new(0,0,0,layout.AbsoluteContentSize.Y + 10)
+end
+
+searchBox:GetPropertyChangedSignal("Text"):Connect(function()
+	updateSearch(searchBox.Text)
+end)
 
 task.wait()
 scroll.CanvasSize = UDim2.new(0,0,0,layout.AbsoluteContentSize.Y + 10)
