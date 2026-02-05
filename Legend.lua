@@ -15,11 +15,12 @@ local MAX_DISTANCE = 8
 local HEIGHT_OFFSET = 0
 
 -- STATE
-local selectedMobs = {} -- Changed to table for multiple mobs
+local selectedMobs = {}
 local currentTarget = nil
 local followEnabled = false
 local followConnection = nil
 local draggingSlider = false
+local mobCache = {} -- Cache for faster lookups
 
 -------------------------------------------------------
 -- CHARACTER RESPAWN HANDLER
@@ -55,25 +56,67 @@ end
 table.sort(mobNames)
 
 -------------------------------------------------------
--- FIND NEAREST ALIVE MOB
+-- BUILD MOB CACHE
+-------------------------------------------------------
+local function rebuildMobCache()
+	mobCache = {}
+	
+	-- Only cache selected mob types
+	for _, mobName in ipairs(selectedMobs) do
+		mobCache[mobName] = {}
+	end
+	
+	-- Find mobs folder (adjust path if needed)
+	local mobsFolder = workspace:FindFirstChild("Mobs ")
+	if not mobsFolder then return end
+	
+	for _, area in ipairs(mobsFolder:GetChildren()) do
+		for _, mob in ipairs(area:GetChildren()) do
+			if table.find(selectedMobs, mob.Name) then
+				local humanoid = mob:FindFirstChildOfClass("Humanoid")
+				local root = mob:FindFirstChild("HumanoidRootPart")
+				
+				if humanoid and root then
+					if not mobCache[mob.Name] then
+						mobCache[mob.Name] = {}
+					end
+					table.insert(mobCache[mob.Name], {
+						model = mob,
+						humanoid = humanoid,
+						root = root
+					})
+				end
+			end
+		end
+	end
+end
+
+-------------------------------------------------------
+-- FIND NEAREST ALIVE MOB (OPTIMIZED)
 -------------------------------------------------------
 local function findNearestAliveMob()
-	if #selectedMobs == 0 then return nil end
+	if #selectedMobs == 0 or not hrp or not hrp.Parent then return nil end
 	
 	local nearestMob = nil
 	local shortestDistance = math.huge
+	local playerPos = hrp.Position
 	
-	for _, obj in ipairs(workspace:GetDescendants()) do
-		if obj:IsA("Model") and table.find(selectedMobs, obj.Name) then
-			local humanoid = obj:FindFirstChildOfClass("Humanoid")
-			local root = obj:FindFirstChild("HumanoidRootPart")
+	for mobName, mobs in pairs(mobCache) do
+		for i = #mobs, 1, -1 do -- Iterate backwards for safe removal
+			local mobData = mobs[i]
 			
-			if humanoid and humanoid.Health > 0 and root and hrp and hrp.Parent then
-				local distance = (hrp.Position - root.Position).Magnitude
+			-- Check if mob still exists and is valid
+			if not mobData.model.Parent or not mobData.humanoid.Parent then
+				table.remove(mobs, i) -- Remove from cache
+			elseif mobData.humanoid.Health > 0 then
+				local distance = (playerPos - mobData.root.Position).Magnitude
 				if distance < shortestDistance then
 					shortestDistance = distance
-					nearestMob = obj
+					nearestMob = mobData.model
 				end
+			else
+				-- Mob is dead, remove from cache
+				table.remove(mobs, i)
 			end
 		end
 	end
@@ -84,26 +127,25 @@ end
 -------------------------------------------------------
 -- FOLLOW LOGIC
 -------------------------------------------------------
+local lastTargetCheck = 0
+local TARGET_CHECK_INTERVAL = 0.5 -- Check for new target every 0.5 seconds
+
 function startFollow()
 	if followConnection then followConnection:Disconnect() end
+	
+	rebuildMobCache() -- Build cache when starting
+	currentTarget = findNearestAliveMob()
 
 	followConnection = RunService.Heartbeat:Connect(function()
-		if followEnabled and character and character.Parent and hrp and hrp.Parent then
-			-- Check if current target is still valid
-			if currentTarget and currentTarget.Parent then
-				local humanoid = currentTarget:FindFirstChildOfClass("Humanoid")
-				if not humanoid or humanoid.Health <= 0 then
-					currentTarget = nil -- Target died, find new one
-				end
-			end
-			
-			-- Find new target if we don't have one
-			if not currentTarget then
-				currentTarget = findNearestAliveMob()
-			end
-			
-			-- Follow the current target
-			if currentTarget and currentTarget.Parent then
+		if not followEnabled or not character or not character.Parent or not hrp or not hrp.Parent then
+			return
+		end
+		
+		-- Check if current target is still valid (lightweight check)
+		if currentTarget and currentTarget.Parent then
+			local humanoid = currentTarget:FindFirstChildOfClass("Humanoid")
+			if humanoid and humanoid.Health > 0 then
+				-- Target is good, follow it
 				local root = currentTarget:FindFirstChild("HumanoidRootPart")
 				if root then
 					local behindPos =
@@ -113,7 +155,15 @@ function startFollow()
 
 					hrp.CFrame = CFrame.lookAt(behindPos, root.Position)
 				end
+				return -- Don't search for new target
 			end
+		end
+		
+		-- Only search for new target periodically, not every frame
+		local currentTime = tick()
+		if currentTime - lastTargetCheck >= TARGET_CHECK_INTERVAL then
+			lastTargetCheck = currentTime
+			currentTarget = findNearestAliveMob()
 		end
 	end)
 end
@@ -124,6 +174,7 @@ function stopFollow()
 		followConnection = nil
 	end
 	currentTarget = nil
+	mobCache = {}
 end
 
 -------------------------------------------------------
@@ -186,7 +237,6 @@ toggle.MouseButton1Click:Connect(function()
 	if followEnabled then
 		toggle.Text = "TP BEHIND: ON"
 		toggle.BackgroundColor3 = Color3.fromRGB(40,140,40)
-		currentTarget = findNearestAliveMob()
 		startFollow()
 	else
 		toggle.Text = "TP BEHIND: OFF"
@@ -208,11 +258,14 @@ clearBtn.TextColor3 = Color3.new(1,1,1)
 clearBtn.MouseButton1Click:Connect(function()
 	selectedMobs = {}
 	currentTarget = nil
+	mobCache = {}
 	
 	-- Update all button colors
 	for _, btn in ipairs(mobButtons) do
 		btn.BackgroundColor3 = Color3.fromRGB(45,45,45)
 	end
+	
+	updateCount()
 end)
 
 -------------------------------------------------------
@@ -344,8 +397,9 @@ for _, name in ipairs(mobNames) do
 		
 		updateCount()
 		
-		-- Update current target if following
+		-- Rebuild cache with new selection
 		if followEnabled then
+			rebuildMobCache()
 			currentTarget = findNearestAliveMob()
 		end
 	end)
@@ -356,12 +410,10 @@ end
 -------------------------------------------------------
 local function updateSearch(query)
 	query = query:lower()
-	local visibleCount = 0
 	
 	for _, btn in ipairs(mobButtons) do
 		if query == "" or btn.Name:lower():find(query, 1, true) then
 			btn.Visible = true
-			visibleCount = visibleCount + 1
 		else
 			btn.Visible = false
 		end
